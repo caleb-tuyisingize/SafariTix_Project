@@ -375,6 +375,9 @@ const getTickets = async (req, res) => {
 };
 
 const updateTicket = async (req, res) => {
+  const { sequelize } = require('../models');
+  const transaction = await sequelize.transaction();
+  
   try {
     const { id } = req.params;
     const { status } = req.body;
@@ -382,18 +385,74 @@ const updateTicket = async (req, res) => {
     const companyId = req.companyId || (await User.findByPk(userId)).company_id;
 
     if (!companyId) {
+      await transaction.rollback();
       return res.status(403).json({ error: 'No company associated with user' });
     }
 
-    // Find ticket
-    const ticket = await Ticket.findByPk(id);
+    // Find ticket with schedule information
+    const ticket = await Ticket.findByPk(id, { 
+      include: [{
+        model: Schedule,
+        attributes: ['id', 'departure_time', 'schedule_date']
+      }],
+      transaction 
+    });
+    
     if (!ticket) {
+      await transaction.rollback();
       return res.status(404).json({ error: 'Ticket not found' });
     }
 
     // Verify ticket belongs to company
     if (ticket.company_id !== companyId) {
+      await transaction.rollback();
       return res.status(403).json({ error: 'Unauthorized to update this ticket' });
+    }
+
+    const previousStatus = ticket.status;
+
+    // TIME-BASED CANCELLATION RULE: Check if cancelling and validate timing
+    if (status === 'CANCELLED' && (previousStatus === 'CONFIRMED' || previousStatus === 'CHECKED_IN')) {
+      const schedule = ticket.Schedule;
+      
+      if (!schedule) {
+        await transaction.rollback();
+        return res.status(400).json({ 
+          success: false,
+          error: 'Schedule not found for this ticket' 
+        });
+      }
+
+      // Get departure time
+      const departureTime = schedule.departure_time;
+      
+      if (!departureTime) {
+        await transaction.rollback();
+        return res.status(400).json({ 
+          success: false,
+          error: 'Departure time not set for this schedule' 
+        });
+      }
+
+      // Calculate time difference
+      const now = new Date();
+      const departure = new Date(departureTime);
+      const timeDiffMinutes = (departure.getTime() - now.getTime()) / (1000 * 60);
+
+      console.log(`[updateTicket] Cancellation check: Departure in ${timeDiffMinutes.toFixed(2)} minutes`);
+      
+      // Block cancellation if less than 10 minutes before departure
+      if (timeDiffMinutes < 10) {
+        await transaction.rollback();
+        return res.status(400).json({ 
+          success: false,
+          error: 'Ticket cannot be cancelled less than 10 minutes before departure',
+          message: 'Ticket cannot be cancelled less than 10 minutes before departure',
+          minutesRemaining: Math.round(timeDiffMinutes)
+        });
+      }
+
+      console.log(`[updateTicket] ✅ Cancellation allowed: ${timeDiffMinutes.toFixed(2)} minutes before departure`);
     }
 
     // Update ticket status
@@ -405,11 +464,32 @@ const updateTicket = async (req, res) => {
         ticket.checked_in_at = new Date();
       }
       
-      await ticket.save();
+      await ticket.save({ transaction });
+
+      // If cancelling a CONFIRMED or CHECKED_IN ticket, free up the seat
+      if (status === 'CANCELLED' && (previousStatus === 'CONFIRMED' || previousStatus === 'CHECKED_IN')) {
+        const schedule = await Schedule.findByPk(ticket.schedule_id, { 
+          transaction, 
+          lock: transaction.LOCK.UPDATE
+        });
+        
+        if (schedule) {
+          // Increment available seats and decrement booked seats
+          schedule.available_seats = parseInt(schedule.available_seats || 0) + 1;
+          schedule.booked_seats = Math.max(0, parseInt(schedule.booked_seats || 0) - 1);
+          await schedule.save({ transaction });
+          
+          console.log(`[updateTicket] ✅ Seat ${ticket.seat_number} on schedule ${ticket.schedule_id} is now AVAILABLE`);
+          console.log(`[updateTicket] Schedule ${ticket.schedule_id}: ${schedule.available_seats} available, ${schedule.booked_seats} booked`);
+        }
+      }
     }
 
+    await transaction.commit();
+
     res.json({ 
-      message: 'Ticket updated successfully', 
+      success: true,
+      message: status === 'CANCELLED' ? 'Ticket cancelled successfully' : 'Ticket updated successfully', 
       ticket: {
         id: ticket.id,
         status: ticket.status,
@@ -417,6 +497,7 @@ const updateTicket = async (req, res) => {
       }
     });
   } catch (error) {
+    await transaction.rollback();
     console.error('updateTicket error:', error);
     res.status(400).json({ error: error.message });
   }
@@ -760,8 +841,8 @@ const createSchedule = async (req, res) => {
       driver_id: driverId || null,
       company_id: companyId,
       schedule_date: date,
-      departure_time: new Date(`${date}T${departureTime}`),
-      arrival_time: new Date(`${date}T${arrivalTime}`),
+      departure_time: departureTime, // Store as time string (HH:MM or HH:MM:SS)
+      arrival_time: arrivalTime,     // Store as time string (HH:MM or HH:MM:SS)
       price_per_seat: parseFloat(price),
       available_seats: bus.capacity,
       status: 'scheduled',
@@ -1139,12 +1220,23 @@ const getDashboardStats = async (req, res) => {
       };
     }
 
+    // Get active trips count (schedules with status 'in_progress')
+    const activeTripsCount = await Schedule.count({
+      where: {
+        company_id: companyId,
+        status: 'in_progress'
+      }
+    });
+
+    console.log('Active trips count:', activeTripsCount);
+
     const responseData = {
       balance: Math.round(totalRevenue),
       sales: Math.round(last30DaysRevenue),
       totalProfit: Math.round(totalRevenue),
       balanceGrowth: parseFloat(revenueGrowth),
       salesGrowth: parseFloat(salesCountGrowth),
+      activeTrips: activeTripsCount,
       weekData,
       recentSales,
       lastOrders: topOrders,
@@ -1156,6 +1248,110 @@ const getDashboardStats = async (req, res) => {
 
   } catch (error) {
     console.error('getDashboardStats error:', error);
+    res.status(400).json({ error: error.message });
+  }
+};
+
+const getActiveTrips = async (req, res) => {
+  try {
+    const userId = req.userId;
+    const companyId = req.companyId || (await User.findByPk(userId)).company_id;
+    
+    if (!companyId) {
+      return res.json({ activeTrips: [] });
+    }
+
+    // Fetch all schedules with status 'in_progress' for this company
+    const activeSchedules = await Schedule.findAll({
+      where: {
+        company_id: companyId,
+        status: 'in_progress'
+      },
+      include: [
+        {
+          model: Route,
+          attributes: ['origin', 'destination'],
+          required: false
+        },
+        {
+          model: Bus,
+          attributes: ['id', 'plate_number'],
+          required: false
+        }
+      ],
+      order: [['trip_start_time', 'DESC']]
+    });
+
+    // Get driver names for each schedule
+    const busIds = activeSchedules.map(s => s.bus_id).filter(Boolean);
+    let driversByBusId = {};
+    
+    if (busIds.length > 0) {
+      const DriverAssignment = require('../models').DriverAssignment;
+      const assignments = await DriverAssignment.findAll({
+        where: {
+          bus_id: busIds,
+          company_id: companyId,
+          unassigned_at: null
+        },
+        include: [{
+          model: require('../models').Driver,
+          required: false
+        }]
+      });
+
+      // Get user info for drivers
+      const userIds = new Set();
+      assignments.forEach(a => {
+        if (a.Driver && a.Driver.user_id) userIds.add(a.Driver.user_id);
+        if (a.driver_id && a.driver_id.length === 36) userIds.add(a.driver_id);
+      });
+
+      const users = await User.findAll({
+        where: { id: Array.from(userIds) },
+        attributes: ['id', 'full_name']
+      });
+      
+      const usersById = {};
+      users.forEach(u => { usersById[u.id] = u; });
+
+      // Map bus_id to driver name
+      assignments.forEach(a => {
+        if (!a.bus_id) return;
+        const drv = a.Driver;
+        let driverName = null;
+        if (drv && drv.user_id && usersById[drv.user_id]) {
+          driverName = usersById[drv.user_id].full_name;
+        } else if (a.driver_id && usersById[a.driver_id]) {
+          driverName = usersById[a.driver_id].full_name;
+        } else if (drv && drv.name) {
+          driverName = drv.name;
+        }
+        if (driverName) {
+          driversByBusId[a.bus_id] = driverName;
+        }
+      });
+    }
+
+    const activeTrips = activeSchedules.map(schedule => {
+      return {
+        id: schedule.id,
+        scheduleId: schedule.id,
+        busPlate: schedule.Bus?.plate_number || 'Unknown',
+        driverName: driversByBusId[schedule.bus_id] || null,
+        routeFrom: schedule.Route?.origin || 'N/A',
+        routeTo: schedule.Route?.destination || 'N/A',
+        departureTime: schedule.departure_time,
+        tripStartTime: schedule.trip_start_time,
+        status: schedule.status
+      };
+    });
+
+    console.log(`Returning ${activeTrips.length} active trips for company ${companyId}`);
+    res.json({ activeTrips });
+
+  } catch (error) {
+    console.error('Error fetching active trips:', error);
     res.status(400).json({ error: error.message });
   }
 };
@@ -1342,6 +1538,7 @@ module.exports = {
   reopenScheduleTickets,
   getScheduleJournals,
   getDashboardStats,
+  getActiveTrips,
   getRevenue
 };
 
