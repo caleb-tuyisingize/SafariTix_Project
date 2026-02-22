@@ -92,7 +92,7 @@ export default function CompanyFleetTracking({ token, activeBuses }: CompanyFlee
       setLoading(true);
       setError(null);
 
-      const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+      const baseUrl = import.meta.env.VITE_API_BASE_URL || 'https://backend-7cxc.onrender.com';
 
       console.log('Fetching schedules from:', `${baseUrl}/api/company/schedules`);
 
@@ -214,7 +214,7 @@ export default function CompanyFleetTracking({ token, activeBuses }: CompanyFlee
   useEffect(() => {
     if (!token) return;
 
-    const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+    const baseUrl = import.meta.env.VITE_API_BASE_URL || 'https://backend-7cxc.onrender.com';
 
     const socket = io(baseUrl, {
       auth: { token },

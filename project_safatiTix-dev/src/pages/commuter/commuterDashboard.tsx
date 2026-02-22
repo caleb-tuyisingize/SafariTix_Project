@@ -39,6 +39,7 @@ import PersonalInformation from '../../components/account/PersonalInformation';
 import PaymentMethods from '../../components/account/PaymentMethods';
 import NotificationsSettings from '../../components/account/NotificationsSettings';
 import PrivacySecurity from '../../components/account/PrivacySecurity';
+import PassengerTracking from '../../components/PassengerTracking';
 
 export default function CommuterDashboard() {
   const { user, signOut, accessToken, signIn } = useAuth();
@@ -53,6 +54,7 @@ export default function CommuterDashboard() {
   const [selectedSeatsMap, setSelectedSeatsMap] = useState<Record<string, boolean>>({});
   const [locking, setLocking] = useState(false);
   const [lockError, setLockError] = useState<string | null>(null);
+  const [trackedTicket, setTrackedTicket] = useState<any | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -107,6 +109,7 @@ export default function CommuterDashboard() {
   const map = useRef<mapboxgl.Map | null>(null);
   const markers = useRef<{ [key: string]: mapboxgl.Marker }>({});
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
+const hasMapboxToken = typeof MAPBOX_TOKEN === 'string' && MAPBOX_TOKEN.trim().length > 0;
   useEffect(() => {
     setProfileForm({ name: user?.name || '', email: user?.email || '', phone: user?.phone || '' });
   }, [user]);
@@ -242,7 +245,7 @@ const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 
   // Initialize map for live tracking
   useEffect(() => {
-    if (activeTab !== 'map' || !mapContainer.current || map.current) return;
+    if (activeTab !== 'map' || !hasMapboxToken || !mapContainer.current || map.current) return;
 
     mapboxgl.accessToken = MAPBOX_TOKEN;
     map.current = new mapboxgl.Map({
@@ -264,7 +267,7 @@ const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 
   // Fetch driver locations when map tab is active
   useEffect(() => {
-    if (activeTab !== 'map') return;
+    if (activeTab !== 'map' || !hasMapboxToken) return;
 
     const fetchDriverLocations = async () => {
       setMapLoading(true);
@@ -468,6 +471,44 @@ const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
     const rem = mins % 60;
     return hrs > 0 ? `${hrs}h ${rem}m` : `${rem}m`;
   };
+
+  const resolveScheduleId = (ticket: any): string | null => {
+    if (!ticket) return null;
+    return (
+      ticket.scheduleId ||
+      ticket.schedule_id ||
+      ticket.schedule?.id ||
+      ticket.trip?.scheduleId ||
+      null
+    );
+  };
+
+  const resolveTicketId = (ticket: any): string | null => {
+    if (!ticket) return null;
+    return ticket.id || ticket.ticketId || ticket.ticket_id || null;
+  };
+
+  const handleTrackBus = (ticket: any) => {
+    if (!ticket) return;
+    setTrackedTicket(ticket);
+    setActiveTab('map');
+    setIsMobileMenuOpen(false);
+  };
+
+  useEffect(() => {
+    if (!upcomingTrips.length) return;
+    const trackable = upcomingTrips.find((t: any) => resolveScheduleId(t));
+    if (!trackedTicket && trackable) {
+      setTrackedTicket(trackable);
+      return;
+    }
+    if (trackedTicket) {
+      const stillExists = upcomingTrips.some((t: any) => resolveTicketId(t) === resolveTicketId(trackedTicket));
+      if (!stillExists && trackable) {
+        setTrackedTicket(trackable);
+      }
+    }
+  }, [upcomingTrips]);
 
   const downloadTicket = (ticket: any) => {
     try {
@@ -738,7 +779,10 @@ const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
                   <QrCode className="w-5 h-5" />
                   View Ticket
                 </button>
-                <button className="flex-1 lg:flex-initial bg-white/10 backdrop-blur-sm text-white border-2 border-white/30 px-6 py-3 rounded-xl font-bold hover:bg-white/20 transition-all duration-300 flex items-center justify-center gap-2">
+                <button
+                  onClick={() => handleTrackBus(upcomingTrips[0])}
+                  className="flex-1 lg:flex-initial bg-white/10 backdrop-blur-sm text-white border-2 border-white/30 px-6 py-3 rounded-xl font-bold hover:bg-white/20 transition-all duration-300 flex items-center justify-center gap-2"
+                >
                   <Navigation className="w-5 h-5" />
                   Track Bus
                 </button>
@@ -958,6 +1002,16 @@ const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
                     <QrCode className="w-4 h-4" />
                     View QR
                   </button>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleTrackBus(trip);
+                    }}
+                    className="bg-green-50 text-green-700 px-4 py-2 rounded-lg font-semibold text-sm hover:bg-green-600 hover:text-white transition-all duration-300 flex items-center gap-2"
+                  >
+                    <Navigation className="w-4 h-4" />
+                    Track Bus
+                  </button>
                 </div>
               </div>
             </div>
@@ -1133,6 +1187,47 @@ const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 
   const renderLiveMap = () => (
     <div className="space-y-6">
+      {(() => {
+        const selectedTrackingTicket = trackedTicket || upcomingTrips.find((t: any) => resolveScheduleId(t));
+        const scheduleId = resolveScheduleId(selectedTrackingTicket);
+        const ticketId = resolveTicketId(selectedTrackingTicket);
+
+        if (!selectedTrackingTicket) {
+          return (
+            <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
+              <div className="text-center">
+                <Navigation className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+                <h3 className="text-xl font-bold text-gray-900 mb-2">No trackable booked trip</h3>
+                <p className="text-gray-600">Book or confirm a ticket first, then tap "Track Bus".</p>
+              </div>
+            </div>
+          );
+        }
+
+        if (!scheduleId || !ticketId) {
+          return (
+            <div className="bg-amber-50 rounded-2xl p-6 border border-amber-200">
+              <h3 className="text-lg font-semibold text-amber-900 mb-1">Tracking unavailable for this ticket</h3>
+              <p className="text-amber-800 text-sm">
+                This ticket is missing schedule linking information from backend response.
+              </p>
+            </div>
+          );
+        }
+
+        return (
+          <PassengerTracking
+            scheduleId={String(scheduleId)}
+            ticketId={String(ticketId)}
+            routeFrom={selectedTrackingTicket.from || selectedTrackingTicket.routeFrom}
+            routeTo={selectedTrackingTicket.to || selectedTrackingTicket.routeTo}
+            departureTime={selectedTrackingTicket.departureTime || selectedTrackingTicket.time || selectedTrackingTicket.date}
+            arrivalTime={selectedTrackingTicket.arrivalTime}
+            autoStart
+          />
+        );
+      })()}
+
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-3xl font-bold text-gray-900">Live Driver Tracking</h2>
@@ -1183,29 +1278,31 @@ const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
         </div>
       </div>
 
-      {/* Map Container */}
-      <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
-        <div className="p-4 border-b border-gray-200">
-          <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-            <MapPin className="w-6 h-6 text-[#0077B6]" />
-            Live Map View
-          </h3>
-        </div>
-
-        {mapLoading && !map.current ? (
-          <div className="h-[500px] flex items-center justify-center">
-            <div className="text-center">
-              <Loader2 className="w-12 h-12 text-[#0077B6] animate-spin mx-auto mb-4" />
-              <p className="text-gray-600">Loading map...</p>
-            </div>
+      {/* Legacy Mapbox fleet map (optional) */}
+      {hasMapboxToken && (
+        <div className="bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+          <div className="p-4 border-b border-gray-200">
+            <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+              <MapPin className="w-6 h-6 text-[#0077B6]" />
+              Live Map View
+            </h3>
           </div>
-        ) : (
-          <div
-            ref={mapContainer}
-            style={{ width: '100%', height: '500px' }}
-          />
-        )}
-      </div>
+
+          {mapLoading && !map.current ? (
+            <div className="h-[500px] flex items-center justify-center">
+              <div className="text-center">
+                <Loader2 className="w-12 h-12 text-[#0077B6] animate-spin mx-auto mb-4" />
+                <p className="text-gray-600">Loading map...</p>
+              </div>
+            </div>
+          ) : (
+            <div
+              ref={mapContainer}
+              style={{ width: '100%', height: '500px' }}
+            />
+          )}
+        </div>
+      )}
 
       {/* Driver List */}
       {driverLocations.length > 0 ? (
@@ -1440,8 +1537,8 @@ const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 
       {/* Ticket Modal */}
       {showTicketModal && selectedTicket && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-md w-full p-8 relative animate-scale-in">
+        <div className="fixed inset-0 xl:flex xl:flex-col bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl xl:overflow-y-auto xl:flex-1 max-w-md w-full p-8 relative animate-scale-in">
             <button
               onClick={() => setShowTicketModal(false)}
               className="absolute top-4 right-4 w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center hover:bg-gray-200 transition-all duration-300"

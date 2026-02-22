@@ -10,4 +10,4 @@ export const supabase = createSupabaseClient(
 );
 
 export const createClient = createSupabaseClient;
-export const API_URL = 'http://localhost:5000/api';
+export const API_URL = 'https://backend-7cxc.onrender.com/api';

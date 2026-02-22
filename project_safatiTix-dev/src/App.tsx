@@ -95,7 +95,7 @@ const App = () => {
             {/* /company/dashboard routes removed (reset). */}
 
             {/* Fallback route */}
-            <Route path='*' element={<NotFound />} />
+            <Route path='*' element={<LoginPage />} />
           </Routes>
         </BrowserRouter>
       </AuthProvider>

@@ -14,7 +14,7 @@ import {
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 
-const API_BASE_URL = 'http://localhost:5000/api';
+const API_BASE_URL = 'https://backend-7cxc.onrender.com/api';
 
 // ==================== BRAND COLORS ====================
 const COLORS = {

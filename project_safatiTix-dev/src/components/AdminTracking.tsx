@@ -121,7 +121,7 @@ const AdminTracking: React.FC<AdminTrackingProps> = ({
         }
 
         // Initialize Socket.IO connection
-        const socket = io(import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000', {
+        const socket = io(import.meta.env.VITE_API_BASE_URL || 'https://backend-7cxc.onrender.com', {
           auth: { token: accessToken },
         });
 

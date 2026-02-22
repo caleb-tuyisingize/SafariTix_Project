@@ -47,7 +47,7 @@ export function useAdminTicketScans(companyId?: string) {
     if (!accessToken || !companyId) return;
 
     // Connect to Socket.IO server
-    const socket = io(import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000', {
+    const socket = io(import.meta.env.VITE_API_BASE_URL || 'https://backend-7cxc.onrender.com', {
       auth: { token: accessToken },
       transports: ['websocket', 'polling'],
     });
@@ -99,7 +99,7 @@ export function useCommuterTicketUpdates() {
     if (!accessToken || !user) return;
 
     // Connect to Socket.IO server
-    const socket = io(import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000', {
+    const socket = io(import.meta.env.VITE_API_BASE_URL || 'https://backend-7cxc.onrender.com', {
       auth: { token: accessToken },
       transports: ['websocket', 'polling'],
     });
@@ -233,7 +233,7 @@ export function LiveTrackingWithScans({ scheduleId }: { scheduleId: string }) {
   useEffect(() => {
     if (!accessToken || !scheduleId) return;
 
-    const socket = io(import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000', {
+    const socket = io(import.meta.env.VITE_API_BASE_URL || 'https://backend-7cxc.onrender.com', {
       auth: { token: accessToken },
     });
 

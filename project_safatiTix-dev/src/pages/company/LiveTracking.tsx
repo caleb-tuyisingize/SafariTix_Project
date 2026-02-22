@@ -53,10 +53,7 @@ interface BusLocation {
 
 // Mapbox token - replace with your own from https://account.mapbox.com/
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
-
-if (!MAPBOX_TOKEN) {
-  throw new Error("VITE_MAPBOX_TOKEN is missing in .env file");
-}
+const hasMapboxToken = typeof MAPBOX_TOKEN === 'string' && MAPBOX_TOKEN.trim().length > 0;
 export default function LiveTracking() {
   const { accessToken } = useAuth();
   const [buses, setBuses] = useState<BusLocation[]>([]);
@@ -67,11 +64,11 @@ export default function LiveTracking() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
   const markers = useRef<{ [key: string]: mapboxgl.Marker }>({});
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+  const API_URL = import.meta.env.VITE_API_URL || 'https://backend-7cxc.onrender.com/api';
 
   // Initialize map
   useEffect(() => {
-    if (!mapContainer.current) return;
+    if (!hasMapboxToken || !mapContainer.current) return;
 
     mapboxgl.accessToken = MAPBOX_TOKEN;
     map.current = new mapboxgl.Map({
@@ -456,15 +453,35 @@ export default function LiveTracking() {
         {/* Map View */}
         <div style={styles.mapContainer}>
           <h2 style={styles.listTitle}>Map View</h2>
-          <div 
-            ref={mapContainer} 
-            style={{ 
-              width: '100%', 
-              height: '450px', 
-              borderRadius: '8px', 
-              overflow: 'hidden' 
-            }} 
-          />
+          {!hasMapboxToken ? (
+            <div
+              style={{
+                width: '100%',
+                height: '450px',
+                borderRadius: '8px',
+                border: '1px solid #FCD34D',
+                background: '#FFFBEB',
+                color: '#92400E',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                textAlign: 'center',
+                padding: '24px',
+              }}
+            >
+              Missing Mapbox token. Add VITE_MAPBOX_TOKEN to your frontend .env file to enable live map tracking.
+            </div>
+          ) : (
+            <div 
+              ref={mapContainer} 
+              style={{ 
+                width: '100%', 
+                height: '450px', 
+                borderRadius: '8px', 
+                overflow: 'hidden' 
+              }} 
+            />
+          )}
           {buses.length === 0 && !loading && (
             <div style={{ 
               position: 'absolute',

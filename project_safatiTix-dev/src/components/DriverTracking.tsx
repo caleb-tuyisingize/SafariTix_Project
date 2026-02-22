@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { MapPin, Navigation, Loader2, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
+import { GoogleMap, MarkerF, PolylineF, useJsApiLoader } from '@react-google-maps/api';
+import { AlertCircle, CheckCircle, Loader2, MapPin, Navigation, XCircle } from 'lucide-react';
 
 interface DriverTrackingProps {
   scheduleId: string;
-  initialStatus?: 'scheduled' | 'in_progress' | 'completed'; // Backend status values
+  initialStatus?: 'scheduled' | 'in_progress' | 'completed';
   onTripStarted?: () => void;
   onTripEnded?: () => void;
 }
@@ -20,13 +21,17 @@ interface LocationData {
 type TripStatus = 'PENDING' | 'ACTIVE' | 'COMPLETED';
 type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
-const DriverTracking: React.FC<DriverTrackingProps> = ({ 
-  scheduleId, 
+const GOOGLE_MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
+const hasGoogleMapsKey = typeof GOOGLE_MAPS_API_KEY === 'string' && GOOGLE_MAPS_API_KEY.trim().length > 0;
+const DEFAULT_CENTER: google.maps.LatLngLiteral = { lat: -1.9441, lng: 30.0619 };
+const PRODUCTION_API_BASE = import.meta.env.VITE_API_BASE_URL || 'https://backend-7cxc.onrender.com';
+
+const DriverTracking: React.FC<DriverTrackingProps> = ({
+  scheduleId,
   initialStatus = 'scheduled',
-  onTripStarted, 
-  onTripEnded 
+  onTripStarted,
+  onTripEnded,
 }) => {
-  // Map backend status to component status
   const mapBackendStatus = (status: string): TripStatus => {
     switch (status) {
       case 'in_progress':
@@ -41,27 +46,40 @@ const DriverTracking: React.FC<DriverTrackingProps> = ({
   const [tripStatus, setTripStatus] = useState<TripStatus>(mapBackendStatus(initialStatus));
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
   const [currentLocation, setCurrentLocation] = useState<LocationData | null>(null);
+  const [locationHistory, setLocationHistory] = useState<google.maps.LatLngLiteral[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isStarting, setIsStarting] = useState(false);
   const [isEnding, setIsEnding] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
   const watchIdRef = useRef<number | null>(null);
+  const mapRef = useRef<google.maps.Map | null>(null);
 
-  // Auto-reconnect if already active
+  const { isLoaded } = useJsApiLoader({
+    id: 'driver-tracking-map',
+    googleMapsApiKey: GOOGLE_MAPS_API_KEY || '',
+  });
+
+  const busIcon = useMemo(() => {
+    return {
+      url: 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="44" height="44" viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="%230077B6"/><path d="M7 6h10a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-1v1.5a1 1 0 1 1-2 0V16h-4v1.5a1 1 0 1 1-2 0V16H7a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Zm1 2v3h8V8H8Zm1 5.25a1 1 0 1 0 0 2 1 1 0 0 0 0-2Zm6 0a1 1 0 1 0 0 2 1 1 0 0 0 0-2Z" fill="white"/></svg>',
+    } as google.maps.Icon;
+  }, [currentLocation]);
+
+  const getAuthToken = () => localStorage.getItem('accessToken') || localStorage.getItem('token');
+
   useEffect(() => {
     if (tripStatus === 'ACTIVE') {
-      const accessToken = localStorage.getItem('token');
+      const accessToken = getAuthToken();
       if (accessToken) {
         initializeSocket(accessToken);
         startLocationTracking();
       }
     }
-  }, []); // Run once on mount
+  }, []);
 
   useEffect(() => {
     return () => {
-      // Cleanup on unmount
       if (watchIdRef.current !== null) {
         navigator.geolocation.clearWatch(watchIdRef.current);
       }
@@ -76,8 +94,7 @@ const DriverTracking: React.FC<DriverTrackingProps> = ({
       setIsStarting(true);
       setError(null);
 
-      // Call API to update schedule status to ACTIVE (in_progress)
-      const accessToken = localStorage.getItem('token');
+      const accessToken = getAuthToken();
       if (!accessToken) {
         throw new Error('Authentication required');
       }
@@ -97,19 +114,13 @@ const DriverTracking: React.FC<DriverTrackingProps> = ({
         throw new Error(data.error || data.message || 'Failed to start trip');
       }
 
-      console.log('✅ Trip started successfully:', data);
       setTripStatus('ACTIVE');
+      setLocationHistory([]);
       onTripStarted?.();
-
-      // Initialize Socket.IO connection
       initializeSocket(accessToken);
-
-      // Start geolocation tracking
       startLocationTracking();
-
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start trip');
-      console.error('❌ Error starting trip:', err);
     } finally {
       setIsStarting(false);
     }
@@ -120,20 +131,17 @@ const DriverTracking: React.FC<DriverTrackingProps> = ({
       setIsEnding(true);
       setError(null);
 
-      // Stop geolocation tracking
       if (watchIdRef.current !== null) {
         navigator.geolocation.clearWatch(watchIdRef.current);
         watchIdRef.current = null;
       }
 
-      // Disconnect socket
       if (socketRef.current) {
         socketRef.current.disconnect();
         socketRef.current = null;
       }
 
-      // Call API to update schedule status to COMPLETED
-      const accessToken = localStorage.getItem('token');
+      const accessToken = getAuthToken();
       if (!accessToken) {
         throw new Error('Authentication required');
       }
@@ -148,23 +156,18 @@ const DriverTracking: React.FC<DriverTrackingProps> = ({
       });
 
       const data = await response.json();
-
       if (!response.ok) {
         throw new Error(data.error || data.message || 'Failed to end trip');
       }
 
-      console.log('✅ Trip ended successfully:', data);
       setTripStatus('COMPLETED');
       setConnectionStatus('disconnected');
       setCurrentLocation(null);
+      setLocationHistory([]);
       onTripEnded?.();
-
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to end trip');
-      console.error('❌ Error ending trip:', err);
-      
-      // Restore connection on error
-      const accessToken = localStorage.getItem('token');
+      const accessToken = getAuthToken();
       if (accessToken) {
         initializeSocket(accessToken);
         startLocationTracking();
@@ -175,29 +178,22 @@ const DriverTracking: React.FC<DriverTrackingProps> = ({
   };
 
   const initializeSocket = (accessToken: string) => {
-    const socket = io(import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000', {
-      auth: {
-        token: accessToken,
-      },
+    const socket = io(import.meta.env.VITE_API_BASE_URL || 'https://backend-7cxc.onrender.com', {
+      auth: { token: accessToken },
     });
 
     setConnectionStatus('connecting');
 
     socket.on('connect', () => {
-      console.log('✅ Socket connected');
       setConnectionStatus('connected');
-      
-      // Join schedule room
       socket.emit('driver:joinSchedule', { scheduleId });
     });
 
     socket.on('disconnect', () => {
-      console.log('❌ Socket disconnected');
       setConnectionStatus('disconnected');
     });
 
     socket.on('error', (data: { message: string }) => {
-      console.error('Socket error:', data.message);
       setError(data.message);
       setConnectionStatus('error');
     });
@@ -216,27 +212,29 @@ const DriverTracking: React.FC<DriverTrackingProps> = ({
         const locationData: LocationData = {
           latitude: position.coords.latitude,
           longitude: position.coords.longitude,
-          speed: position.coords.speed, // m/s or null
-          heading: position.coords.heading, // degrees or null
+          speed: position.coords.speed,
+          heading: position.coords.heading,
           timestamp: position.timestamp,
         };
 
         setCurrentLocation(locationData);
+        setLocationHistory((prev) => {
+          const next = [...prev, { lat: locationData.latitude, lng: locationData.longitude }];
+          return next.slice(-100);
+        });
 
-        // Emit location to socket
-        if (socketRef.current && connectionStatus === 'connected') {
+        if (socketRef.current?.connected) {
           socketRef.current.emit('driver:locationUpdate', {
             scheduleId,
             latitude: locationData.latitude,
             longitude: locationData.longitude,
-            speed: locationData.speed ? locationData.speed * 3.6 : null, // Convert m/s to km/h
+            speed: locationData.speed ? locationData.speed * 3.6 : null,
             heading: locationData.heading,
           });
         }
       },
-      (error) => {
-        console.error('Geolocation error:', error);
-        setError(`Location error: ${error.message}`);
+      (geoError) => {
+        setError(`Location error: ${geoError.message}`);
       },
       {
         enableHighAccuracy: true,
@@ -281,7 +279,6 @@ const DriverTracking: React.FC<DriverTrackingProps> = ({
         Live GPS Tracking
       </h2>
 
-      {/* Error Message */}
       {error && (
         <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg flex items-start gap-2">
           <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
@@ -289,7 +286,6 @@ const DriverTracking: React.FC<DriverTrackingProps> = ({
         </div>
       )}
 
-      {/* Connection Status */}
       {tripStatus === 'ACTIVE' && (
         <div className="mb-4 p-4 bg-gray-50 rounded-lg">
           <div className="flex items-center justify-between">
@@ -302,7 +298,55 @@ const DriverTracking: React.FC<DriverTrackingProps> = ({
         </div>
       )}
 
-      {/* Current Location */}
+      {tripStatus === 'ACTIVE' && (
+        <div className="mb-4 rounded-lg overflow-hidden border border-blue-100">
+          {!hasGoogleMapsKey ? (
+            <div className="p-4 bg-amber-50 text-amber-800 text-sm">
+              Missing Google Maps key. Add <code>VITE_GOOGLE_MAPS_API_KEY</code> in frontend <code>.env</code>.
+            </div>
+          ) : !isLoaded ? (
+            <div className="p-6 flex items-center justify-center">
+              <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
+            </div>
+          ) : (
+            <GoogleMap
+              mapContainerStyle={{ width: '100%', height: '320px' }}
+              center={
+                currentLocation
+                  ? { lat: currentLocation.latitude, lng: currentLocation.longitude }
+                  : DEFAULT_CENTER
+              }
+              zoom={14}
+              onLoad={(mapInstance) => {
+                mapRef.current = mapInstance;
+              }}
+              options={{
+                mapTypeControl: false,
+                streetViewControl: false,
+                fullscreenControl: false,
+              }}
+            >
+              {locationHistory.length > 1 && (
+                <PolylineF
+                  path={locationHistory}
+                  options={{
+                    strokeColor: '#1D4ED8',
+                    strokeOpacity: 0.8,
+                    strokeWeight: 4,
+                  }}
+                />
+              )}
+              {currentLocation && (
+                <MarkerF
+                  position={{ lat: currentLocation.latitude, lng: currentLocation.longitude }}
+                  icon={busIcon}
+                />
+              )}
+            </GoogleMap>
+          )}
+        </div>
+      )}
+
       {currentLocation && (
         <div className="mb-4 p-4 bg-blue-50 rounded-lg space-y-2">
           <div className="flex items-center gap-2 mb-2">
@@ -327,14 +371,13 @@ const DriverTracking: React.FC<DriverTrackingProps> = ({
             {currentLocation.heading !== null && (
               <div>
                 <span className="text-gray-600">Heading:</span>
-                <p className="font-medium">{currentLocation.heading.toFixed(0)}°</p>
+                <p className="font-medium">{currentLocation.heading.toFixed(0)} deg</p>
               </div>
             )}
           </div>
         </div>
       )}
 
-      {/* Action Buttons */}
       <div className="flex gap-3">
         {tripStatus !== 'ACTIVE' ? (
           <button
@@ -375,17 +418,12 @@ const DriverTracking: React.FC<DriverTrackingProps> = ({
         )}
       </div>
 
-      {/* Status Info */}
       <div className="mt-4 p-3 bg-gray-50 rounded text-sm text-gray-600">
-        {tripStatus === 'PENDING' && (
-          <p>Click "Start Trip" to begin sharing your location with passengers.</p>
-        )}
+        {tripStatus === 'PENDING' && <p>Click "Start Trip" to begin sharing your location with passengers.</p>}
         {tripStatus === 'ACTIVE' && (
           <p>Your location is being shared with passengers. Click "End Trip" when the journey is complete.</p>
         )}
-        {tripStatus === 'COMPLETED' && (
-          <p className="text-green-700 font-medium">Trip completed successfully.</p>
-        )}
+        {tripStatus === 'COMPLETED' && <p className="text-green-700 font-medium">Trip completed successfully.</p>}
       </div>
     </div>
   );
